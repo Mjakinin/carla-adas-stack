@@ -91,6 +91,7 @@ class FrenetPlannerNode(Node):
         self.declare_parameter('target_speed_mps', 8.33)  # 30 km/h
         self.declare_parameter('lane_width', 3.5)         # Standard lane width (meters)
         self.declare_parameter('planning_horizon_sec', 3.0)
+        self.declare_parameter('enable_evasive_maneuver', False)
         self.declare_parameter('role_name', 'ego_vehicle')
 
         self.host = self.get_parameter('host').get_parameter_value().string_value
@@ -98,6 +99,7 @@ class FrenetPlannerNode(Node):
         self.target_speed = self.get_parameter('target_speed_mps').get_parameter_value().double_value
         self.lane_width = self.get_parameter('lane_width').get_parameter_value().double_value
         self.T = self.get_parameter('planning_horizon_sec').get_parameter_value().double_value
+        self.enable_evasive = self.get_parameter('enable_evasive_maneuver').get_parameter_value().bool_value
         self.role_name = self.get_parameter('role_name').get_parameter_value().string_value
 
         # Connect to CARLA Map API for high-definition road geometry
@@ -273,10 +275,12 @@ class FrenetPlannerNode(Node):
 
         ref_arr = np.array(ref_wps)
 
-        # Decide lateral target: If obstacle detected in current lane, initiate overtake offset
-        target_d = self.lane_width if self.obstacle_detected else 0.0
-        # Damped lateral shift transition
-        self.d = 0.85 * self.d + 0.15 * target_d
+        # In Euro NCAP AEB protocol and standard lane keeping, the vehicle stays strictly centered in the lane (d = 0.0)
+        if self.enable_evasive:
+            target_d = self.lane_width if self.obstacle_detected else 0.0
+            self.d = 0.85 * self.d + 0.15 * target_d
+        else:
+            self.d = 0.0
 
         plan_path = Path()
         plan_path.header.stamp = self.get_clock().now().to_msg()

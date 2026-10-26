@@ -112,9 +112,9 @@ class AebNode(Node):
             y = pts['y']
             z = pts['z']
 
-            # Filter forward corridor (ignore own vehicle body x < 2.8m)
+            # Filter forward corridor (exclude behind sensor x < 0.5m, within lateral half_width)
             # In lidar frame: x is forward, y is left (+/- half_width), z is height
-            mask = (x > 2.8) & (x < self.max_dist) & (np.abs(y) < self.half_width) & (z > self.ground_z) & (z < 1.0)
+            mask = (x > 0.5) & (x < self.max_dist) & (np.abs(y) < self.half_width) & (z > self.ground_z) & (z < 1.2)
             corridor_pts_x = x[mask]
             corridor_pts_y = y[mask]
 
@@ -123,11 +123,11 @@ class AebNode(Node):
                 self.tracked_dist = float(np.min(dists))
                 self.last_obstacle_time = now_sec
             else:
-                # If this sector had no points, keep tracked obstacle alive for 250ms (full LiDAR rotation cycle)
-                if (now_sec - self.last_obstacle_time) > 0.25:
+                # If this sector had no points, keep tracked obstacle alive for 350ms (full LiDAR rotation cycle)
+                if (now_sec - self.last_obstacle_time) > 0.35:
                     self.tracked_dist = float('inf')
         else:
-            if (now_sec - self.last_obstacle_time) > 0.25:
+            if (now_sec - self.last_obstacle_time) > 0.35:
                 self.tracked_dist = float('inf')
 
         min_distance = self.tracked_dist
@@ -135,7 +135,7 @@ class AebNode(Node):
         # If corridor is completely clear
         if min_distance >= 900.0 or min_distance == float('inf'):
             self.ttc = float('inf')
-            if self.safety_state != "EMERGENCY_BRAKE" or self.current_speed <= 0.15:
+            if self.safety_state != "EMERGENCY_BRAKE":
                 self.safety_state = "NORMAL"
             self.last_min_dist = None
             self.publish_status(dist=float('inf'), ttc=float('inf'), state=self.safety_state)
@@ -153,8 +153,8 @@ class AebNode(Node):
         # Safety state evaluation with latching / hysteresis
         old_state = self.safety_state
         if self.safety_state == "EMERGENCY_BRAKE":
-            # Once in emergency brake, STAY in emergency brake until complete stop and obstacle removed
-            if self.current_speed <= 0.1 and min_distance > 25.0:
+            # Once in emergency brake, STAY in emergency brake until complete stop and obstacle completely cleared
+            if self.current_speed <= 0.05 and min_distance > 40.0:
                 self.safety_state = "NORMAL"
             else:
                 self.safety_state = "EMERGENCY_BRAKE"
@@ -162,7 +162,7 @@ class AebNode(Node):
             self.safety_state = "EMERGENCY_BRAKE"
             if old_state != "EMERGENCY_BRAKE":
                 self.get_logger().warn(f"AEB TRIGGERED EMERGENCY BRAKE! Dist={min_distance:.2f}m, TTC={self.ttc:.2f}s, EgoSpeed={self.current_speed*3.6:.1f}km/h")
-        elif self.ttc <= self.ttc_warn or min_distance <= 20.0:
+        elif self.ttc <= self.ttc_warn or min_distance <= (self.min_dist + 12.0):
             self.safety_state = "WARNING"
         else:
             self.safety_state = "NORMAL"
@@ -176,8 +176,8 @@ class AebNode(Node):
         safe_cmd.steering_angle = self.last_cmd.steering_angle
 
         # Kinematic safe speed envelope based on obstacle distance
-        d_clear = 6.5  # meters from roof LiDAR (~4.0m from front bumper)
-        if self.tracked_dist < 40.0:
+        d_clear = max(6.5, self.min_dist - 0.5)  # meters from roof LiDAR (~4.5m bumper clearance)
+        if self.tracked_dist < 45.0:
             if self.tracked_dist <= d_clear:
                 v_safe = 0.0
             else:
@@ -192,7 +192,7 @@ class AebNode(Node):
         elif self.safety_state == "WARNING":
             # Decelerate / clamp speed safely
             safe_cmd.speed = min(self.last_cmd.speed, v_safe, 3.5)
-            safe_cmd.acceleration = -3.0
+            safe_cmd.acceleration = -4.0
         else:
             # NORMAL
             safe_cmd.speed = min(self.last_cmd.speed, v_safe)
