@@ -10,6 +10,13 @@ A modular, production-grade **Autonomous Driving (AD) and Advanced Driver Assist
 
 Designed for automotive software engineering and autonomous systems architectures (e.g. BMW, CARIAD, Mobileye).
 
+<p align="center">
+  <img src="docs/media/dynamic_overtake_maneuver.gif" alt="Level 3/4 Dynamic Overtake in CARLA Simulator" width="100%" />
+</p>
+<p align="center">
+  <em>Figure 1: Autonomous Level 3/4 Dynamic Overtaking in CARLA 0.9.15 using Jerk-Optimal Quintic Polynomial S-curves.</em>
+</p>
+
 ---
 
 ## Architecture Overview
@@ -77,6 +84,13 @@ Compliant with **Euro NCAP** and **ISO 22839**:
   * **NORMAL (Green):** $TTC > 2.5\,\text{s}$ – Planner commands executed without alteration.
   * **WARNING / FCW (Yellow):** $1.4\,\text{s} < TTC \le 2.5\,\text{s}$ – Forward Collision Warning active, speed reduction clamped.
   * **EMERGENCY BRAKE (Red):** $TTC \le 1.4\,\text{s}$ or $d \le 4.0\,\text{m}$ – Immediate full brake override (`brake = 1.0`, `acceleration = -8.0 m/s²`).
+
+<p align="center">
+  <img src="docs/media/aeb_emergency_braking.gif" alt="Euro NCAP AEB Emergency Braking Demo" width="100%" />
+</p>
+<p align="center">
+  <em>Figure 2: Euro NCAP CCRs Emergency Braking Scenario stopping 7.4 m before the obstacle with zero collisions.</em>
+</p>
 
 ### 3. Frenet Frame Local Trajectory Planner (`frenet_planner_node`)
 Implements optimal quintic polynomial trajectory generation (Werling et al.):

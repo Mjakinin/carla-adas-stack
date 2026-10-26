@@ -142,6 +142,48 @@ def main():
             col_sensor = world.spawn_actor(col_bp, carla.Transform(), attach_to=ego)
             col_sensor.listen(lambda event: collisions.append(event.other_actor.type_id))
 
+            # Optional HD Direct-Render Video Recording
+            record_mode = "--record" in sys.argv or "-r" in sys.argv
+            record_cam = None
+            ffmpeg_proc = None
+            media_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../docs/media"))
+            out_mp4 = os.path.join(media_dir, "aeb_emergency_braking.mp4")
+            out_gif = os.path.join(media_dir, "aeb_emergency_braking.gif")
+
+            if record_mode:
+                os.makedirs(media_dir, exist_ok=True)
+                ffmpeg_proc = subprocess.Popen([
+                    "ffmpeg", "-y",
+                    "-f", "rawvideo",
+                    "-vcodec", "rawvideo",
+                    "-s", "1280x720",
+                    "-pix_fmt", "bgra",
+                    "-r", "25",
+                    "-i", "-",
+                    "-c:v", "libx264",
+                    "-preset", "fast",
+                    "-crf", "20",
+                    "-pix_fmt", "yuv420p",
+                    out_mp4
+                ], stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+                cam_bp = world.get_blueprint_library().find('sensor.camera.rgb')
+                cam_bp.set_attribute('image_size_x', '1280')
+                cam_bp.set_attribute('image_size_y', '720')
+                cam_bp.set_attribute('fov', '90')
+                cam_tf = carla.Transform(carla.Location(x=-6.5, y=0.0, z=3.0), carla.Rotation(pitch=-14.0))
+                record_cam = world.spawn_actor(cam_bp, cam_tf, attach_to=ego)
+
+                def _cam_callback(img):
+                    try:
+                        if ffmpeg_proc and ffmpeg_proc.stdin:
+                            ffmpeg_proc.stdin.write(bytes(img.raw_data))
+                    except (BrokenPipeError, OSError):
+                        pass
+
+                record_cam.listen(_cam_callback)
+                print("✓ Direkte HD-Renderaufnahme aktiv (1280x720 @ 25 FPS Stream)...")
+
             carla_map = world.get_map()
             ego_wp = carla_map.get_waypoint(ego.get_location())
             next_wps = ego_wp.next(26.0)
@@ -192,6 +234,15 @@ def main():
         print("=" * 75)
 
     finally:
+        if 'record_cam' in locals() and record_cam and record_cam.is_alive:
+            record_cam.stop()
+            record_cam.destroy()
+        if 'ffmpeg_proc' in locals() and ffmpeg_proc and ffmpeg_proc.stdin:
+            try:
+                ffmpeg_proc.stdin.close()
+                ffmpeg_proc.wait(timeout=10)
+            except Exception:
+                pass
         if col_sensor and col_sensor.is_alive:
             col_sensor.stop()
             col_sensor.destroy()
@@ -203,6 +254,15 @@ def main():
         dashboard.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
+
+        if 'record_mode' in locals() and record_mode and os.path.exists(out_mp4):
+            print("➜ Generiere animiertes Showcase-GIF für GitHub README...")
+            subprocess.run([
+                "ffmpeg", "-y", "-i", out_mp4,
+                "-vf", "fps=12,scale=720:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse",
+                "-loop", "0", out_gif
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print(f"✓ Video & GIF erfolgreich in {media_dir} abgelegt!")
 
     return 0
 

@@ -93,8 +93,8 @@ class FrenetPlannerNode(Node):
         self.declare_parameter('planning_horizon_sec', 3.0)
         self.declare_parameter('enable_evasive_maneuver', False)
         self.declare_parameter('enable_overtaking', False)
-        self.declare_parameter('overtake_lane_offset', 3.8)
-        self.declare_parameter('overtake_trigger_dist', 32.0)
+        self.declare_parameter('overtake_lane_offset', 2.9)
+        self.declare_parameter('overtake_trigger_dist', 34.0)
         self.declare_parameter('role_name', 'ego_vehicle')
 
         self.host = self.get_parameter('host').get_parameter_value().string_value
