@@ -1,0 +1,35 @@
+/**:
+  ros__parameters:
+    host: "127.0.0.1"
+    port: 2000
+    timeout: 10.0
+    role_name: "ego_vehicle"
+    vehicle_filter: "vehicle.tesla.model3"
+    spawn_index: 0
+
+    # Actuation & Vehicle Physical Limits
+    max_steer_angle: 0.70      # radians (~40 degrees)
+    wheelbase: 2.87            # meters (Tesla Model 3)
+
+    # Stanley Controller Parameters
+    k_stanley: 0.85            # Cross-track error gain
+    soft_speed: 1.0            # Softening factor epsilon (m/s)
+    target_speed_mps: 8.33     # 30 km/h cruising speed
+    min_speed_mps: 3.5         # Cornering speed limit
+
+    # PID Longitudinal Speed Controller
+    kp_speed: 0.35
+    ki_speed: 0.05
+    kd_speed: 0.02
+
+    # Euro NCAP / ISO 22839 AEB Parameters
+    ttc_warning_threshold: 2.5    # seconds
+    ttc_emergency_threshold: 1.4  # seconds
+    min_safety_distance: 4.0      # meters
+    corridor_half_width: 1.15     # meters
+    corridor_max_dist: 45.0       # meters
+    ground_height_threshold: -1.5 # meters
+
+    # Frenet Local Planner Parameters
+    lane_width: 3.5               # meters
+    planning_horizon_sec: 3.0     # seconds
