@@ -352,6 +352,18 @@ class CarlaInterfaceNode(Node):
         t.transform.rotation.w = q[3]
         self.tf_broadcaster.sendTransform(t)
 
+        # Update CARLA Spectator chase camera for live visual monitoring
+        try:
+            spectator = self.world.get_spectator()
+            fwd = transform.get_forward_vector()
+            spectator_tf = carla.Transform(
+                transform.location - fwd * 7.5 + carla.Location(z=3.8),
+                carla.Rotation(pitch=-16.0, yaw=transform.rotation.yaw, roll=0.0)
+            )
+            spectator.set_transform(spectator_tf)
+        except Exception:
+            pass
+
         # Compute vehicle actuation control
         self.apply_vehicle_control()
 
