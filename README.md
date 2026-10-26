@@ -82,16 +82,40 @@ Compliant with **Euro NCAP** and **ISO 22839**:
 Implements optimal quintic polynomial trajectory generation (Werling et al.):
 * **Frenet Frame Coordinates:**
   * $s$: Longitudinal arc length along road reference line.
-  * $d$: Lateral offset from road center line ($d = 0$ center, $d = +3.5\,\text{m}$ overtaking lane).
-* Jerk-optimal polynomial formulation:
-  $$d(t) = a_0 + a_1 t + a_2 t^2 + a_3 t^3 + a_4 t^4 + a_5 t^5$$
-* Smooth lane transitions for dynamic obstacle avoidance without sudden steering spikes.
+  * $d$: Lateral offset from road center line ($d = 0$ center, $d = +2.9\,\text{m}$ overtaking lane).
+* **Jerk-Optimal Minimum-Snap S-Curve Formulation:**
+  $$d(u) = d_0 + (d_{target} - d_0) \cdot (10 u^3 - 15 u^4 + 6 u^5), \quad u = \frac{s}{L_{transition}}$$
+* **Finite State Machine (FSM):**
+  $$\text{CRUISING} \longrightarrow \text{LANE\_CHANGE\_LEFT} \longrightarrow \text{PASSING\_OBSTACLE} \longrightarrow \text{LANE\_CHANGE\_RIGHT} \longrightarrow \text{COMPLETED}$$
+* Smooth continuous transition without steering spikes or hunting oscillations.
 
 ### 4. EKF State Estimator (`state_estimator_node`)
 Fuses high-frequency IMU angular rate ($\omega_z$) and acceleration with GNSS fixes:
 * State Vector: $\mathbf{x} = [x, y, \psi, v]^T$
 * Covariance Propagation: $\mathbf{P}_{k|k-1} = \mathbf{F} \mathbf{P}_{k-1} \mathbf{F}^T + \mathbf{Q} \Delta t$
 * Measurement Update on GNSS Fix: $\mathbf{K} = \mathbf{P} \mathbf{H}^T (\mathbf{H} \mathbf{P} \mathbf{H}^T + \mathbf{R})^{-1}$
+
+---
+
+## Interactive Demonstration Suite
+
+Launch the interactive test suite with one command:
+```bash
+./tools/start_demo.sh
+```
+
+| Scenario | Objective | Speed | Expected Result |
+|---|---|---|---|
+| **[1] Euro NCAP AEB (CCRs)** | Stationary vehicle blocks lane | 30 km/h | Full emergency brake, stops at ~7.4 m (5.0 m clearance), 0 collisions |
+| **[2] Level 3/4 Dynamic Overtake** | Smooth S-curve around obstacle | 30 km/h | Shifts to adjacent lane ($d = 2.9\,\text{m}$), passes obstacle with >1m clearance, merges back, 0 collisions |
+
+### Automated Video & GIF Recording
+To capture high-definition MP4 video and animated GIFs of the CARLA window for GitHub / LinkedIn:
+```bash
+./tools/record_demo.sh 2   # Records Scenario 2 (Overtake)
+./tools/record_demo.sh 1   # Records Scenario 1 (AEB)
+```
+Output files are automatically stored in `docs/media/`.
 
 ---
 

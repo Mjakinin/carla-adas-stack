@@ -34,3 +34,8 @@
     lane_width: 3.5               # meters
     planning_horizon_sec: 3.0     # seconds
     enable_evasive_maneuver: false # Euro NCAP AEB requires in-lane braking without swerving
+
+    # Dynamic Overtaking Parameters (Quintic Polynomial S-Curve)
+    enable_overtaking: true
+    overtake_lane_offset: 2.9     # meters (crisp passing clearance ~1.1m from obstacle)
+    overtake_trigger_dist: 34.0    # meters (lookahead trigger)
