@@ -29,10 +29,10 @@ class AebNode(Node):
         # Parameters
         self.declare_parameter('ttc_warning_threshold', 2.5)   # Seconds (Yellow FCW)
         self.declare_parameter('ttc_emergency_threshold', 1.4) # Seconds (Red AEB)
-        self.declare_parameter('min_safety_distance', 4.0)     # Hard stop distance (meters)
+        self.declare_parameter('min_safety_distance', 2.5)     # Hard stop distance ahead of bumper (meters)
         self.declare_parameter('corridor_half_width', 1.15)    # Vehicle half-width corridor (meters)
         self.declare_parameter('corridor_max_dist', 40.0)      # Max LiDAR lookahead (meters)
-        self.declare_parameter('ground_height_threshold', -1.5)# Cut off ground reflections
+        self.declare_parameter('ground_height_threshold', -1.6)# Cut off ground reflections
         self.declare_parameter('role_name', 'ego_vehicle')
 
         self.ttc_warn = self.get_parameter('ttc_warning_threshold').get_parameter_value().double_value
@@ -112,9 +112,9 @@ class AebNode(Node):
         y = pts['y']
         z = pts['z']
 
-        # Filter forward corridor
+        # Filter forward corridor (ignore own vehicle body x < 2.8m)
         # In lidar frame: x is forward, y is left (+/- half_width), z is height
-        mask = (x > 0.5) & (x < self.max_dist) & (np.abs(y) < self.half_width) & (z > self.ground_z) & (z < 1.0)
+        mask = (x > 2.8) & (x < self.max_dist) & (np.abs(y) < self.half_width) & (z > self.ground_z) & (z < 1.0)
         corridor_pts_x = x[mask]
         corridor_pts_y = y[mask]
 
@@ -149,10 +149,19 @@ class AebNode(Node):
         else:
             self.ttc = float('inf')
 
-        # Safety state evaluation
-        if self.ttc <= self.ttc_crit or min_distance <= self.min_dist:
+        # Safety state evaluation with latching / hysteresis
+        old_state = self.safety_state
+        if self.safety_state == "EMERGENCY_BRAKE" and self.current_speed > 0.15:
+            # Remain latched in emergency brake until complete stop or obstacle removed
+            if min_distance > (self.min_dist * 2.5):
+                self.safety_state = "NORMAL"
+            else:
+                self.safety_state = "EMERGENCY_BRAKE"
+        elif self.ttc <= self.ttc_crit or min_distance <= self.min_dist:
             self.safety_state = "EMERGENCY_BRAKE"
-        elif self.ttc <= self.ttc_warn or min_distance <= (self.min_dist * 2.0):
+            if old_state != "EMERGENCY_BRAKE":
+                self.get_logger().warn(f"AEB TRIGGERED EMERGENCY BRAKE! Dist={min_distance:.2f}m, TTC={self.ttc:.2f}s, EgoSpeed={self.current_speed*3.6:.1f}km/h")
+        elif self.ttc <= self.ttc_warn or min_distance <= (self.min_dist * 1.8):
             self.safety_state = "WARNING"
         else:
             self.safety_state = "NORMAL"

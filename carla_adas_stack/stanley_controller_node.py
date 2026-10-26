@@ -146,29 +146,31 @@ class StanleyControllerNode(Node):
 
         # 2. Nearest Waypoint
         idx, _ = self.find_nearest_waypoint(fx, fy)
-        target_wp = self.waypoints[idx]
+        nearest_wp = self.waypoints[idx]
 
-        # 3. Heading Error psi_e
-        wp_yaw = target_wp[2]
+        # 3. Heading Error psi_e (look ahead 1 waypoint along path to anticipate curves)
+        lookahead_idx = min(idx + 1, len(self.waypoints) - 1)
+        wp_yaw = self.waypoints[lookahead_idx][2]
         heading_error = normalize_angle(wp_yaw - self.current_yaw)
 
-        # 4. Cross-Track Error e_ct
-        # Vector from waypoint to front axle
-        dx = fx - target_wp[0]
-        dy = fy - target_wp[1]
-        # Cross product to determine signed distance relative to path heading
-        # Normal vector to path: [-sin(wp_yaw), cos(wp_yaw)]
-        # e_ct = -dx * sin(wp_yaw) + dy * cos(wp_yaw)
-        cross_track_error = -dx * math.sin(wp_yaw) + dy * math.cos(wp_yaw)
+        # 4. Cross-Track Error e_ct (measured at front axle)
+        dx = fx - nearest_wp[0]
+        dy = fy - nearest_wp[1]
+        cross_track_error = dx * math.sin(nearest_wp[2]) - dy * math.cos(nearest_wp[2])
 
         # 5. Stanley Lateral Control Law
         # delta = psi_e + arctan( (k * e_ct) / (v + soft_speed) )
-        effective_speed = max(0.1, abs(self.current_speed)) + self.soft_speed
+        effective_speed = max(0.5, abs(self.current_speed)) + self.soft_speed
         lateral_correction = math.atan2(self.k_stanley * cross_track_error, effective_speed)
         steer_cmd = heading_error + lateral_correction
 
         # Saturate steering
         steer_cmd = float(np.clip(steer_cmd, -self.max_steer_rad, self.max_steer_rad))
+
+        # Periodic debug logging (2 Hz)
+        if not hasattr(self, 'last_log_t') or (self.get_clock().now().nanoseconds - self.last_log_t) > 5e8:
+            self.last_log_t = self.get_clock().now().nanoseconds
+            self.get_logger().info(f"[STANLEY] v={self.current_speed*3.6:.1f}km/h, heading_err={math.degrees(heading_error):.1f}°, ect={cross_track_error:.2f}m, steer={math.degrees(steer_cmd):.1f}°")
 
         # 6. Adaptive Longitudinal Speed (Curve slowdown)
         steer_ratio = abs(steer_cmd) / self.max_steer_rad

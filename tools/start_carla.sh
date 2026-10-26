@@ -24,9 +24,9 @@ if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
     docker rm -f "${CONTAINER_NAME}" > /dev/null 2>&1
 fi
 
-CARLA_CMD="./CarlaUE4.sh -quality-level=Low -benchmark -fps=30"
+CARLA_CMD="./CarlaUE4.sh /Game/Carla/Maps/Town01_Opt -quality-level=Low -benchmark -fps=30"
 if [[ "$MODE" == "offscreen" ]]; then
-    CARLA_CMD="./CarlaUE4.sh -RenderOffScreen -quality-level=Low -benchmark -fps=30"
+    CARLA_CMD="./CarlaUE4.sh /Game/Carla/Maps/Town01_Opt -RenderOffScreen -quality-level=Low -benchmark -fps=30"
 fi
 
 docker run -d \

@@ -84,6 +84,8 @@ class CarlaInterfaceNode(Node):
 
         # TF Broadcaster
         self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
+        self.static_tf_broadcaster = tf2_ros.StaticTransformBroadcaster(self)
+        self.publish_static_sensor_tfs()
 
         # Control Subscriber
         self.ackermann_sub = self.create_subscription(
@@ -113,6 +115,12 @@ class CarlaInterfaceNode(Node):
 
     def spawn_ego_vehicle(self):
         """Spawns the ego vehicle at a designated spawn point in the CARLA world."""
+        # Clean up existing actors with matching role_name
+        for actor in self.world.get_actors().filter('vehicle.*'):
+            if actor.attributes.get('role_name') == self.role_name:
+                self.get_logger().info(f"Cleaning up previous ego vehicle actor {actor.id}")
+                actor.destroy()
+
         blueprint_library = self.world.get_blueprint_library()
         bp = blueprint_library.find(self.vehicle_filter)
         if not bp:
@@ -287,6 +295,10 @@ class CarlaInterfaceNode(Node):
 
         # Transform and velocity
         transform = self.ego_vehicle.get_transform()
+        # Ignore uninitialized CARLA physics frame
+        if abs(transform.location.x) < 0.1 and abs(transform.location.y) < 0.1:
+            return
+
         vel = self.ego_vehicle.get_velocity()
         ang_vel = self.ego_vehicle.get_angular_velocity()
 
@@ -340,14 +352,12 @@ class CarlaInterfaceNode(Node):
         t.transform.rotation.w = q[3]
         self.tf_broadcaster.sendTransform(t)
 
-        # Broadcast sensor frames attached to base_link
-        self.broadcast_sensor_tfs(now)
-
         # Compute vehicle actuation control
         self.apply_vehicle_control()
 
-    def broadcast_sensor_tfs(self, now):
+    def publish_static_sensor_tfs(self):
         """Publishes static child transforms for camera and lidar frames."""
+        now = self.get_clock().now().to_msg()
         # Camera TF
         t_cam = TransformStamped()
         t_cam.header.stamp = now
@@ -357,7 +367,6 @@ class CarlaInterfaceNode(Node):
         t_cam.transform.translation.y = 0.0
         t_cam.transform.translation.z = 1.6
         t_cam.transform.rotation.w = 1.0
-        self.tf_broadcaster.sendTransform(t_cam)
 
         # LiDAR TF
         t_lid = TransformStamped()
@@ -368,15 +377,17 @@ class CarlaInterfaceNode(Node):
         t_lid.transform.translation.y = 0.0
         t_lid.transform.translation.z = 2.2
         t_lid.transform.rotation.w = 1.0
-        self.tf_broadcaster.sendTransform(t_lid)
+
+        self.static_tf_broadcaster.sendTransform([t_cam, t_lid])
 
     def apply_vehicle_control(self):
         """Translates target speed and steer angle into CARLA VehicleControl."""
         control = carla.VehicleControl()
 
         # 1. Steering: normalize rad to [-1.0, 1.0]
+        # In ROS, +steer is LEFT. In CARLA, +steer is RIGHT. Invert sign!
         normalized_steer = self.target_steer / self.max_steer_angle
-        control.steer = float(np.clip(normalized_steer, -1.0, 1.0))
+        control.steer = - float(np.clip(normalized_steer, -1.0, 1.0))
 
         # 2. Longitudinal Speed Controller (PID)
         speed_error = self.target_speed - self.current_speed
@@ -384,11 +395,11 @@ class CarlaInterfaceNode(Node):
         speed_derivative = (speed_error - self.speed_prev_error) / 0.02
         self.speed_prev_error = speed_error
 
-        # Active stop
-        if self.target_speed < 0.1 and self.current_speed < 0.2:
+        # Active stop or Emergency Brake demand
+        if self.target_speed < 0.1:
             control.throttle = 0.0
             control.brake = 1.0
-            control.hand_brake = False
+            control.hand_brake = (self.current_speed < 0.2)
         else:
             if speed_error >= 0.0:
                 throttle_cmd = (self.kp_speed * speed_error) + (self.ki_speed * self.speed_integral) + (self.kd_speed * speed_derivative)
@@ -396,7 +407,7 @@ class CarlaInterfaceNode(Node):
                 control.brake = 0.0
             else:
                 control.throttle = 0.0
-                brake_cmd = float(np.clip(-0.4 * speed_error, 0.0, 1.0))
+                brake_cmd = float(np.clip(-0.5 * speed_error, 0.0, 1.0))
                 control.brake = brake_cmd
 
         control.reverse = False

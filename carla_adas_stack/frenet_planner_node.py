@@ -222,69 +222,77 @@ class FrenetPlannerNode(Node):
             try:
                 # Convert ROS ego pose (x, y) to CARLA (x, -y)
                 ego_loc = carla.Location(x=float(self.ego_x), y=float(-self.ego_y), z=0.3)
-                curr_wp = self.carla_map.get_waypoint(ego_loc)
+                curr_wp = self.carla_map.get_waypoint(ego_loc, project_to_road=True, lane_type=carla.LaneType.Driving)
+
+                # Guard against selecting opposite-direction lane
+                carla_ego_yaw = -math.degrees(self.ego_yaw)
+                yaw_diff = abs((curr_wp.transform.rotation.yaw - carla_ego_yaw + 180.0) % 360.0 - 180.0)
+                if yaw_diff > 90.0:
+                    left_wp = curr_wp.get_left_lane()
+                    if left_wp and left_wp.lane_type == carla.LaneType.Driving:
+                        l_diff = abs((left_wp.transform.rotation.yaw - carla_ego_yaw + 180.0) % 360.0 - 180.0)
+                        if l_diff < yaw_diff:
+                            curr_wp = left_wp
+                            yaw_diff = l_diff
+                    right_wp = curr_wp.get_right_lane()
+                    if right_wp and right_wp.lane_type == carla.LaneType.Driving:
+                        r_diff = abs((right_wp.transform.rotation.yaw - carla_ego_yaw + 180.0) % 360.0 - 180.0)
+                        if r_diff < yaw_diff:
+                            curr_wp = right_wp
+
                 for _ in range(40):
                     ref_wps.append([curr_wp.transform.location.x, -curr_wp.transform.location.y])
                     next_list = curr_wp.next(2.0)
                     if not next_list:
                         break
-                    curr_wp = next_list[0]
+                    if len(next_list) == 1:
+                        curr_wp = next_list[0]
+                    else:
+                        # At junction branching, choose path closest to current orientation
+                        curr_yaw = curr_wp.transform.rotation.yaw
+                        best_wp = next_list[0]
+                        min_d_yaw = float('inf')
+                        for cand in next_list:
+                            diff = abs((cand.transform.rotation.yaw - curr_yaw + 180.0) % 360.0 - 180.0)
+                            if diff < min_d_yaw:
+                                min_d_yaw = diff
+                                best_wp = cand
+                        curr_wp = best_wp
             except Exception:
                 pass
 
         if len(ref_wps) < 5:
-            # Fallback to parametric route if map query unavailable
-            ref_wps = self.generate_town01_reference_route()
+            # Clean local forward projection from current vehicle pose
+            ref_wps = []
+            for s in range(40):
+                dist = s * 2.0
+                ref_wps.append([
+                    self.ego_x + dist * math.cos(self.ego_yaw),
+                    self.ego_y + dist * math.sin(self.ego_yaw)
+                ])
 
         ref_arr = np.array(ref_wps)
 
         # Decide lateral target: If obstacle detected in current lane, initiate overtake offset
-        if self.obstacle_detected:
-            target_d = self.lane_width  # Shift 3.5m left
-        else:
-            target_d = 0.0             # Lane center
+        target_d = self.lane_width if self.obstacle_detected else 0.0
+        # Damped lateral shift transition
+        self.d = 0.85 * self.d + 0.15 * target_d
 
-        # Generate Quintic Lateral Trajectory
-        d_poly = QuinticPolynomial(
-            xs=self.d, vxs=0.0, axs=0.0,
-            xe=target_d, vxe=0.0, axe=0.0,
-            T=self.T
-        )
-
-        # Generate Longitudinal Profile
-        s_poly = QuarticPolynomial(
-            xs=0.0, vxs=self.ego_speed, axs=0.0,
-            vxe=self.target_speed, axe=0.0,
-            T=self.T
-        )
-
-        # Sample trajectory points
-        dt = 0.1
-        steps = int(self.T / dt)
         plan_path = Path()
         plan_path.header.stamp = self.get_clock().now().to_msg()
         plan_path.header.frame_id = 'map'
 
         num_wps = len(ref_arr)
-
-        for i in range(steps):
-            t = i * dt
-            s_val = s_poly.calc_point(t)
-            d_val = d_poly.calc_point(t)
-
-            # Map s_val to index in reference route
-            wp_idx = min(int(s_val * 0.5), num_wps - 2)
-            next_idx = wp_idx + 1
-
-            rx = ref_arr[wp_idx, 0]
-            ry = ref_arr[wp_idx, 1]
-            dx = ref_arr[next_idx, 0] - rx
-            dy = ref_arr[next_idx, 1] - ry
+        for i in range(num_wps - 1):
+            rx = ref_arr[i, 0]
+            ry = ref_arr[i, 1]
+            dx = ref_arr[i+1, 0] - rx
+            dy = ref_arr[i+1, 1] - ry
             ref_yaw = math.atan2(dy, dx)
 
-            # Cartesian transformation from Frenet (s, d):
-            px = rx - d_val * math.sin(ref_yaw)
-            py = ry + d_val * math.cos(ref_yaw)
+            # Cartesian transformation with lateral offset d:
+            px = rx - self.d * math.sin(ref_yaw)
+            py = ry + self.d * math.cos(ref_yaw)
 
             pose = PoseStamped()
             pose.header = plan_path.header
@@ -300,8 +308,6 @@ class FrenetPlannerNode(Node):
 
             plan_path.poses.append(pose)
 
-        # Update current d for next cycle
-        self.d = d_poly.calc_point(0.1)
         self.path_pub.publish(plan_path)
 
 
