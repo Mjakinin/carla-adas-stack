@@ -92,6 +92,9 @@ class FrenetPlannerNode(Node):
         self.declare_parameter('lane_width', 3.5)         # Standard lane width (meters)
         self.declare_parameter('planning_horizon_sec', 3.0)
         self.declare_parameter('enable_evasive_maneuver', False)
+        self.declare_parameter('enable_overtaking', False)
+        self.declare_parameter('overtake_lane_offset', 3.8)
+        self.declare_parameter('overtake_trigger_dist', 32.0)
         self.declare_parameter('role_name', 'ego_vehicle')
 
         self.host = self.get_parameter('host').get_parameter_value().string_value
@@ -100,6 +103,9 @@ class FrenetPlannerNode(Node):
         self.lane_width = self.get_parameter('lane_width').get_parameter_value().double_value
         self.T = self.get_parameter('planning_horizon_sec').get_parameter_value().double_value
         self.enable_evasive = self.get_parameter('enable_evasive_maneuver').get_parameter_value().bool_value
+        self.enable_overtake = self.get_parameter('enable_overtaking').get_parameter_value().bool_value
+        self.lane_offset = self.get_parameter('overtake_lane_offset').get_parameter_value().double_value
+        self.trigger_dist = self.get_parameter('overtake_trigger_dist').get_parameter_value().double_value
         self.role_name = self.get_parameter('role_name').get_parameter_value().string_value
 
         # Connect to CARLA Map API for high-definition road geometry
@@ -138,6 +144,11 @@ class FrenetPlannerNode(Node):
             f'/carla/{self.role_name}/frenet_candidates',
             10
         )
+        self.overtake_status_pub = self.create_publisher(
+            String,
+            f'/carla/{self.role_name}/overtake_status',
+            10
+        )
 
         # Internal state
         self.ego_x = 0.0
@@ -151,6 +162,12 @@ class FrenetPlannerNode(Node):
         self.d = 0.0
         self.current_lateral_state = 0.0  # 0.0 = center lane, +3.5 = overtake lane
         self.obstacle_detected = False
+
+        # Overtake Finite State Machine: CRUISING -> LANE_CHANGE_LEFT -> PASSING_OBSTACLE -> LANE_CHANGE_RIGHT -> COMPLETED
+        self.overtake_state = "CRUISING"
+        self.overtake_start_x = 0.0
+        self.obstacle_x = 0.0
+        self.aeb_dist = float('inf')
 
         # Plan loop at 10 Hz
         self.timer = self.create_timer(0.1, self.planning_loop)
@@ -204,11 +221,15 @@ class FrenetPlannerNode(Node):
         try:
             import json
             data = json.loads(msg.data)
-            # If warning or emergency brake, signal need to consider lateral detour
-            if data['state'] in ['WARNING', 'EMERGENCY_BRAKE'] and data['obstacle_distance_m'] < 20.0:
-                self.obstacle_detected = True
-            elif data['obstacle_distance_m'] > 25.0:
-                self.obstacle_detected = False
+            self.aeb_dist = data.get('obstacle_distance_m', float('inf'))
+
+            # Trigger dynamic overtake if enabled and obstacle detected ahead
+            if self.enable_overtake and self.overtake_state == "CRUISING":
+                if self.aeb_dist < self.trigger_dist and self.ego_speed > 1.5:
+                    self.overtake_state = "OVERTAKING"
+                    self.overtake_start_x = self.ego_x
+                    self.obstacle_x = self.ego_x + self.aeb_dist
+                    self.get_logger().info(f"[OVERTAKE] Obstacle detected at {self.aeb_dist:.1f}m! Initiating Quintic Polynomial S-Curve Overtake (target offset {self.lane_offset}m).")
         except Exception:
             pass
 
@@ -242,7 +263,7 @@ class FrenetPlannerNode(Node):
                         if r_diff < yaw_diff:
                             curr_wp = right_wp
 
-                for _ in range(40):
+                for _ in range(45):
                     ref_wps.append([curr_wp.transform.location.x, -curr_wp.transform.location.y])
                     next_list = curr_wp.next(2.0)
                     if not next_list:
@@ -266,7 +287,7 @@ class FrenetPlannerNode(Node):
         if len(ref_wps) < 5:
             # Clean local forward projection from current vehicle pose
             ref_wps = []
-            for s in range(40):
+            for s in range(45):
                 dist = s * 2.0
                 ref_wps.append([
                     self.ego_x + dist * math.cos(self.ego_yaw),
@@ -275,12 +296,37 @@ class FrenetPlannerNode(Node):
 
         ref_arr = np.array(ref_wps)
 
-        # In Euro NCAP AEB protocol and standard lane keeping, the vehicle stays strictly centered in the lane (d = 0.0)
-        if self.enable_evasive:
-            target_d = self.lane_width if self.obstacle_detected else 0.0
-            self.d = 0.85 * self.d + 0.15 * target_d
-        else:
-            self.d = 0.0
+        # Overtake Progress Evaluation & State Updates
+        substate = self.overtake_state
+        L_shift = 20.0
+        L_pass = max(self.obstacle_x + 24.0, self.overtake_start_x + 48.0)
+        L_return = L_pass + 20.0
+
+        if self.enable_overtake and self.overtake_state == "OVERTAKING":
+            if self.ego_x < self.overtake_start_x + L_shift:
+                substate = "LANE_CHANGE_LEFT"
+            elif self.ego_x <= L_pass:
+                substate = "PASSING_OBSTACLE"
+            elif self.ego_x < L_return:
+                substate = "LANE_CHANGE_RIGHT"
+            else:
+                self.overtake_state = "COMPLETED"
+                substate = "COMPLETED"
+                self.get_logger().info("[OVERTAKE] Overtake maneuver complete! Rejoined original lane.")
+
+        # Publish live overtake status
+        try:
+            import json
+            status_msg = String()
+            status_msg.data = json.dumps({
+                'state': substate,
+                'd_current': round(self.d, 2),
+                'ego_x': round(self.ego_x, 1),
+                'obstacle_x': round(self.obstacle_x, 1)
+            })
+            self.overtake_status_pub.publish(status_msg)
+        except Exception:
+            pass
 
         plan_path = Path()
         plan_path.header.stamp = self.get_clock().now().to_msg()
@@ -294,9 +340,31 @@ class FrenetPlannerNode(Node):
             dy = ref_arr[i+1, 1] - ry
             ref_yaw = math.atan2(dy, dx)
 
-            # Cartesian transformation with lateral offset d:
-            px = rx - self.d * math.sin(ref_yaw)
-            py = ry + self.d * math.cos(ref_yaw)
+            # Calculate quintic polynomial S-curve lateral offset
+            if self.enable_overtake and self.overtake_state == "OVERTAKING":
+                if rx <= self.overtake_start_x:
+                    d_wp = 0.0
+                elif rx < self.overtake_start_x + L_shift:
+                    u = min(max((rx - self.overtake_start_x) / L_shift, 0.0), 1.0)
+                    poly = 10.0 * (u**3) - 15.0 * (u**4) + 6.0 * (u**5)
+                    d_wp = self.lane_offset * poly
+                elif rx <= L_pass:
+                    d_wp = self.lane_offset
+                elif rx < L_return:
+                    u = min(max((rx - L_pass) / 20.0, 0.0), 1.0)
+                    poly = 10.0 * (u**3) - 15.0 * (u**4) + 6.0 * (u**5)
+                    d_wp = self.lane_offset * (1.0 - poly)
+                else:
+                    d_wp = 0.0
+            else:
+                d_wp = 0.0
+
+            if i == 0:
+                self.d = d_wp
+
+            # Cartesian transformation with lateral offset d_wp:
+            px = rx - d_wp * math.sin(ref_yaw)
+            py = ry + d_wp * math.cos(ref_yaw)
 
             pose = PoseStamped()
             pose.header = plan_path.header
