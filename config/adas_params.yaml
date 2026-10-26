@@ -23,11 +23,11 @@
     kd_speed: 0.02
 
     # Euro NCAP / ISO 22839 AEB Parameters
-    ttc_warning_threshold: 2.8    # seconds
-    ttc_emergency_threshold: 1.6  # seconds
-    min_safety_distance: 6.0      # meters
-    corridor_half_width: 1.15     # meters
-    corridor_max_dist: 45.0       # meters
+    ttc_warning_threshold: 3.2    # seconds
+    ttc_emergency_threshold: 2.0  # seconds
+    min_safety_distance: 8.5      # meters
+    corridor_half_width: 1.25     # meters
+    corridor_max_dist: 50.0       # meters
     ground_height_threshold: -1.6 # meters
 
     # Frenet Local Planner Parameters

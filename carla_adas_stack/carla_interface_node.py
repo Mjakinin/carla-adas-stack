@@ -69,6 +69,11 @@ class CarlaInterfaceNode(Node):
             self.client.set_timeout(self.timeout)
             self.world = self.client.get_world()
             self.map = self.world.get_map()
+            if 'Town01' not in self.map.name:
+                self.get_logger().info("Loading Town01_Opt map for ADAS testing...")
+                self.client.load_world('Town01_Opt')
+                self.world = self.client.get_world()
+                self.map = self.world.get_map()
             self.get_logger().info(f"Connected to CARLA Map: '{self.map.name}'")
         except Exception as e:
             self.get_logger().error(f"Failed to connect to CARLA: {e}")
@@ -98,6 +103,7 @@ class CarlaInterfaceNode(Node):
         # Target control states
         self.target_speed = 0.0
         self.target_steer = 0.0
+        self.target_accel = 0.0
         self.current_speed = 0.0
         self.speed_integral = 0.0
         self.speed_prev_error = 0.0
@@ -285,6 +291,7 @@ class CarlaInterfaceNode(Node):
         """Receives Ackermann target commands (speed & steering angle)."""
         self.target_speed = max(0.0, msg.speed)
         self.target_steer = msg.steering_angle
+        self.target_accel = msg.acceleration
 
     def update_telemetry_and_control(self):
         """50 Hz loop for odometry, TF publication, and vehicle control actuation."""
@@ -408,10 +415,11 @@ class CarlaInterfaceNode(Node):
         self.speed_prev_error = speed_error
 
         # Active stop or Emergency Brake demand
-        if self.target_speed < 0.1:
+        if self.target_speed < 0.1 or self.target_accel < -5.0:
             control.throttle = 0.0
             control.brake = 1.0
             control.hand_brake = (self.current_speed < 0.2)
+            self.speed_integral = 0.0
         else:
             if speed_error >= 0.0:
                 throttle_cmd = (self.kp_speed * speed_error) + (self.ki_speed * self.speed_integral) + (self.kd_speed * speed_derivative)

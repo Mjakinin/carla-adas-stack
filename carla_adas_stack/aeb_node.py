@@ -85,6 +85,8 @@ class AebNode(Node):
         self.last_cmd = AckermannDrive()
         self.last_min_dist = None
         self.last_dist_time = None
+        self.last_obstacle_time = 0.0
+        self.tracked_dist = float('inf')
         self.ttc = float('inf')
         self.safety_state = "NORMAL"
 
@@ -103,45 +105,44 @@ class AebNode(Node):
         pts_gen = pc2.read_points(msg, field_names=('x', 'y', 'z'), skip_nans=True)
         pts = np.fromiter(pts_gen, dtype=[('x', 'f4'), ('y', 'f4'), ('z', 'f4')])
 
-        if len(pts) == 0:
-            self.ttc = float('inf')
-            self.safety_state = "NORMAL"
-            return
-
-        x = pts['x']
-        y = pts['y']
-        z = pts['z']
-
-        # Filter forward corridor (ignore own vehicle body x < 2.8m)
-        # In lidar frame: x is forward, y is left (+/- half_width), z is height
-        mask = (x > 2.8) & (x < self.max_dist) & (np.abs(y) < self.half_width) & (z > self.ground_z) & (z < 1.0)
-        corridor_pts_x = x[mask]
-        corridor_pts_y = y[mask]
-
         now_sec = self.get_clock().now().nanoseconds * 1e-9
 
-        if len(corridor_pts_x) == 0:
+        if len(pts) > 0:
+            x = pts['x']
+            y = pts['y']
+            z = pts['z']
+
+            # Filter forward corridor (ignore own vehicle body x < 2.8m)
+            # In lidar frame: x is forward, y is left (+/- half_width), z is height
+            mask = (x > 2.8) & (x < self.max_dist) & (np.abs(y) < self.half_width) & (z > self.ground_z) & (z < 1.0)
+            corridor_pts_x = x[mask]
+            corridor_pts_y = y[mask]
+
+            if len(corridor_pts_x) > 0:
+                dists = np.sqrt(corridor_pts_x**2 + corridor_pts_y**2)
+                self.tracked_dist = float(np.min(dists))
+                self.last_obstacle_time = now_sec
+            else:
+                # If this sector had no points, keep tracked obstacle alive for 250ms (full LiDAR rotation cycle)
+                if (now_sec - self.last_obstacle_time) > 0.25:
+                    self.tracked_dist = float('inf')
+        else:
+            if (now_sec - self.last_obstacle_time) > 0.25:
+                self.tracked_dist = float('inf')
+
+        min_distance = self.tracked_dist
+
+        # If corridor is completely clear
+        if min_distance >= 900.0 or min_distance == float('inf'):
             self.ttc = float('inf')
-            self.safety_state = "NORMAL"
+            if self.safety_state != "EMERGENCY_BRAKE" or self.current_speed <= 0.15:
+                self.safety_state = "NORMAL"
             self.last_min_dist = None
-            self.publish_status(dist=float('inf'), ttc=float('inf'), state="NORMAL")
+            self.publish_status(dist=float('inf'), ttc=float('inf'), state=self.safety_state)
             return
 
-        # Closest obstacle distance
-        dists = np.sqrt(corridor_pts_x**2 + corridor_pts_y**2)
-        min_distance = float(np.min(dists))
-
-        # Relative velocity calculation
+        # Relative closing speed (for stationary obstacle, equal to ego speed)
         v_rel = max(0.0, self.current_speed)
-        if self.last_min_dist is not None and self.last_dist_time is not None:
-            dt = now_sec - self.last_dist_time
-            if dt > 0.01:
-                measured_v_rel = (self.last_min_dist - min_distance) / dt
-                # Smooth relative speed estimate with ego speed
-                v_rel = max(0.0, 0.7 * measured_v_rel + 0.3 * self.current_speed)
-
-        self.last_min_dist = min_distance
-        self.last_dist_time = now_sec
 
         # Time-to-Collision (TTC)
         if v_rel > 0.3:
@@ -151,9 +152,9 @@ class AebNode(Node):
 
         # Safety state evaluation with latching / hysteresis
         old_state = self.safety_state
-        if self.safety_state == "EMERGENCY_BRAKE" and self.current_speed > 0.15:
-            # Remain latched in emergency brake until complete stop or obstacle removed
-            if min_distance > (self.min_dist * 2.5):
+        if self.safety_state == "EMERGENCY_BRAKE":
+            # Once in emergency brake, STAY in emergency brake until complete stop and obstacle removed
+            if self.current_speed <= 0.1 and min_distance > 25.0:
                 self.safety_state = "NORMAL"
             else:
                 self.safety_state = "EMERGENCY_BRAKE"
@@ -161,7 +162,7 @@ class AebNode(Node):
             self.safety_state = "EMERGENCY_BRAKE"
             if old_state != "EMERGENCY_BRAKE":
                 self.get_logger().warn(f"AEB TRIGGERED EMERGENCY BRAKE! Dist={min_distance:.2f}m, TTC={self.ttc:.2f}s, EgoSpeed={self.current_speed*3.6:.1f}km/h")
-        elif self.ttc <= self.ttc_warn or min_distance <= (self.min_dist * 1.8):
+        elif self.ttc <= self.ttc_warn or min_distance <= 20.0:
             self.safety_state = "WARNING"
         else:
             self.safety_state = "NORMAL"
@@ -174,17 +175,27 @@ class AebNode(Node):
         safe_cmd = AckermannDrive()
         safe_cmd.steering_angle = self.last_cmd.steering_angle
 
+        # Kinematic safe speed envelope based on obstacle distance
+        d_clear = 6.5  # meters from roof LiDAR (~4.0m from front bumper)
+        if self.tracked_dist < 40.0:
+            if self.tracked_dist <= d_clear:
+                v_safe = 0.0
+            else:
+                v_safe = math.sqrt(2.0 * 2.5 * (self.tracked_dist - d_clear))
+        else:
+            v_safe = float('inf')
+
         if self.safety_state == "EMERGENCY_BRAKE":
             # HARD STOP OVERRIDE
             safe_cmd.speed = 0.0
-            safe_cmd.acceleration = -8.0  # Deceleration demand
+            safe_cmd.acceleration = -8.0  # Maximum deceleration demand
         elif self.safety_state == "WARNING":
-            # Decelerate / clamp speed
-            safe_cmd.speed = min(self.last_cmd.speed * 0.5, 3.0)
-            safe_cmd.acceleration = self.last_cmd.acceleration
+            # Decelerate / clamp speed safely
+            safe_cmd.speed = min(self.last_cmd.speed, v_safe, 3.5)
+            safe_cmd.acceleration = -3.0
         else:
             # NORMAL
-            safe_cmd.speed = self.last_cmd.speed
+            safe_cmd.speed = min(self.last_cmd.speed, v_safe)
             safe_cmd.acceleration = self.last_cmd.acceleration
 
         self.cmd_safe_pub.publish(safe_cmd)

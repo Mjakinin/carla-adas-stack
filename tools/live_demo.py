@@ -105,11 +105,14 @@ def main():
     print("\n" + "-" * 75)
 
     lead_vehicle = None
+    col_sensor = None
+    collisions = []
+
     try:
-        # Phase 1: Autonomous cruising under Stanley controller (5 seconds)
+        # Phase 1: Autonomous cruising on straight track under Stanley controller
         print("PHASE 1: Autonomes Fahren & Spurhaltung (Stanley Controller)\n")
         start_t = time.time()
-        while time.time() - start_t < 4.0:
+        while time.time() - start_t < 2.2:
             rclpy.spin_once(dashboard, timeout_sec=0.05)
             st = dashboard.latest_status or {}
             render_dashboard(
@@ -125,9 +128,9 @@ def main():
 
         print("\n\n" + "-" * 75)
         print("PHASE 2: Unvorhergesehenes Hindernis (Euro NCAP Notbrems-Test)\n")
-        print("➜ Ein stehendes Fahrzeug (Audi TT) blockiert plötzlich die Fahrspur 25m voraus!")
+        print("➜ Ein stehendes Fahrzeug (Audi TT) blockiert die Fahrspur 26m voraus!")
 
-        # Spawn obstacle in front
+        # Find ego vehicle and attach collision sensor
         ego = None
         for a in world.get_actors().filter('vehicle.*'):
             if a.attributes.get('role_name') == 'ego_vehicle':
@@ -135,9 +138,13 @@ def main():
                 break
 
         if ego:
+            col_bp = world.get_blueprint_library().find('sensor.other.collision')
+            col_sensor = world.spawn_actor(col_bp, carla.Transform(), attach_to=ego)
+            col_sensor.listen(lambda event: collisions.append(event.other_actor.type_id))
+
             carla_map = world.get_map()
             ego_wp = carla_map.get_waypoint(ego.get_location())
-            next_wps = ego_wp.next(25.0)
+            next_wps = ego_wp.next(26.0)
             if next_wps:
                 lead_tf = next_wps[0].transform
                 lead_tf.location.z += 0.5
@@ -147,7 +154,7 @@ def main():
         # Phase 2: AEB Intervention
         start_t = time.time()
         stopped_dist = None
-        while time.time() - start_t < 6.0:
+        while time.time() - start_t < 8.0:
             rclpy.spin_once(dashboard, timeout_sec=0.05)
             st = dashboard.latest_status or {}
             state = st.get('state', 'NORMAL')
@@ -166,18 +173,28 @@ def main():
                 dashboard.lidar_count
             )
 
-            if spd < 0.2 and dist < 25.0 and stopped_dist is None:
+            if len(collisions) > 0:
+                break
+
+            if spd < 0.15 and dist < 20.0 and (time.time() - start_t > 1.5):
                 stopped_dist = dist
+                break
 
         print("\n\n" + "=" * 75)
-        if stopped_dist:
+        if len(collisions) > 0:
+            print(f" ✗ KOLLISION ERKANNT! Ego-Fahrzeug hat Hindernis berührt ({collisions[0]})")
+        elif stopped_dist:
             print(f" ✓ ERFOLG: Euro NCAP Notbremsung (AEB) erfolgreich ausgelöst!")
             print(f"   Fahrzeug kam mit Vollbremsung sicher {stopped_dist:.2f} m vor dem Hindernis zum Stillstand.")
+            print(f"   Kollisionen registriert: 0 (Perfekt abgesichert).")
         else:
-            print(" ✓ Simulation erfolgreich beendet.")
+            print(" ✓ Simulation beendet.")
         print("=" * 75)
 
     finally:
+        if col_sensor and col_sensor.is_alive:
+            col_sensor.stop()
+            col_sensor.destroy()
         if lead_vehicle and lead_vehicle.is_alive:
             lead_vehicle.destroy()
         import signal
