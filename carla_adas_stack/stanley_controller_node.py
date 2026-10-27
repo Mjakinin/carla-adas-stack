@@ -32,7 +32,9 @@ class StanleyControllerNode(Node):
         super().__init__('stanley_controller_node')
 
         # Parameters
-        self.declare_parameter('k_stanley', 0.8)       # Cross-track gain
+        self.declare_parameter('k_stanley', 0.65)       # Cross-track gain
+        self.declare_parameter('k_d_stanley', 0.12)     # Yaw rate damping gain (eliminates hunting/wobble)
+        self.declare_parameter('steer_smoothing', 0.25) # Low-pass EMA filter factor
         self.declare_parameter('soft_speed', 1.0)      # Regularization term epsilon (m/s)
         self.declare_parameter('wheelbase', 2.87)      # Wheelbase of Tesla Model 3 (meters)
         self.declare_parameter('max_steer_rad', 0.65)  # Max steering angle (~37 deg)
@@ -41,6 +43,8 @@ class StanleyControllerNode(Node):
         self.declare_parameter('role_name', 'ego_vehicle')
 
         self.k_stanley = self.get_parameter('k_stanley').get_parameter_value().double_value
+        self.k_d_stanley = self.get_parameter('k_d_stanley').get_parameter_value().double_value
+        self.steer_smoothing = self.get_parameter('steer_smoothing').get_parameter_value().double_value
         self.soft_speed = self.get_parameter('soft_speed').get_parameter_value().double_value
         self.wheelbase = self.get_parameter('wheelbase').get_parameter_value().double_value
         self.max_steer_rad = self.get_parameter('max_steer_rad').get_parameter_value().double_value
@@ -77,7 +81,9 @@ class StanleyControllerNode(Node):
         # State
         self.current_pose = None
         self.current_yaw = 0.0
+        self.current_yaw_rate = 0.0
         self.current_speed = 0.0
+        self.filtered_steer = 0.0
         self.waypoints = []  # List of [x, y, yaw]
         self.path_received = False
 
@@ -94,6 +100,7 @@ class StanleyControllerNode(Node):
             msg.pose.pose.orientation.w
         ]
         _, _, self.current_yaw = tf_transformations.euler_from_quaternion(q)
+        self.current_yaw_rate = msg.twist.twist.angular.z
         self.current_speed = msg.twist.twist.linear.x
 
     def path_callback(self, msg: Path):
@@ -158,14 +165,20 @@ class StanleyControllerNode(Node):
         dy = fy - nearest_wp[1]
         cross_track_error = dx * math.sin(nearest_wp[2]) - dy * math.cos(nearest_wp[2])
 
-        # 5. Stanley Lateral Control Law
-        # delta = psi_e + arctan( (k * e_ct) / (v + soft_speed) )
+        # 5. Stanley Lateral Control Law with D-Term Yaw Rate Damping
+        # delta = psi_e + arctan( (k * e_ct) / (v + soft_speed) ) - k_d * r_yaw
         effective_speed = max(0.5, abs(self.current_speed)) + self.soft_speed
         lateral_correction = math.atan2(self.k_stanley * cross_track_error, effective_speed)
-        steer_cmd = heading_error + lateral_correction
+        
+        # Damping against vehicle yaw rate eliminates the classic Stanley hunting/weaving oscillation
+        steer_cmd_raw = heading_error + lateral_correction - self.k_d_stanley * self.current_yaw_rate
 
-        # Saturate steering
-        steer_cmd = float(np.clip(steer_cmd, -self.max_steer_rad, self.max_steer_rad))
+        # Saturate steering limits
+        steer_cmd_raw = float(np.clip(steer_cmd_raw, -self.max_steer_rad, self.max_steer_rad))
+
+        # Exponential moving average filter for smooth, realistic actuator dynamics
+        self.filtered_steer = (self.steer_smoothing * steer_cmd_raw) + ((1.0 - self.steer_smoothing) * self.filtered_steer)
+        steer_cmd = self.filtered_steer
 
         # Periodic debug logging (2 Hz)
         if not hasattr(self, 'last_log_t') or (self.get_clock().now().nanoseconds - self.last_log_t) > 5e8:

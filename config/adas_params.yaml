@@ -12,7 +12,9 @@
     wheelbase: 2.87            # meters (Tesla Model 3)
 
     # Stanley Controller Parameters
-    k_stanley: 0.85            # Cross-track error gain
+    k_stanley: 0.65            # Cross-track error gain (optimized for stability)
+    k_d_stanley: 0.12          # Yaw rate damping gain (eliminates hunting/weaving)
+    steer_smoothing: 0.25      # Actuation low-pass EMA filter (buttery smooth steering)
     soft_speed: 1.0            # Softening factor epsilon (m/s)
     target_speed_mps: 8.33     # 30 km/h cruising speed
     min_speed_mps: 3.5         # Cornering speed limit
